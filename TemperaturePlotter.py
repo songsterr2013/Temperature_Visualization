@@ -45,7 +45,7 @@ class TemperaturePlotter(QMainWindow):
         layout.addLayout(end_layout)
 
         self.unit_selector = QComboBox()
-        self.unit_selector.addItems(["小時", "日", "月", "年"])  # 增加年份選項
+        self.unit_selector.addItems(["分鐘", "小時", "日", "月", "年"])  # 增加年份選項
         layout.addWidget(QLabel("數據單位:"))  # 標籤
         layout.addWidget(self.unit_selector)  # 下拉選單
 
@@ -67,36 +67,29 @@ class TemperaturePlotter(QMainWindow):
         start_date = self.start_date.date().toString("yyyy-MM-dd") + ' ' + self.start_time.time().toString("HH:mm") + ':00'
         end_date = self.end_date.date().toString("yyyy-MM-dd") + ' ' + self.end_time.time().toString("HH:mm") + ':00'
         unit = self.unit_selector.currentText()
+
         # 從資料庫獲取數據
         timestamps, high_temps, low_temps = self.fetch_temperature_data(start_date, end_date, unit)
 
-        # 繪製溫度數據
         self.plot_widget.clear()
 
-        # 設置 X 軸範圍
-        if timestamps:  # 確保 timestamps 不為空
-            self.plot_widget.setXRange(timestamps[0], timestamps[-1])  # 設定 X 軸範圍
-        # 設置 Y 軸範圍
+        # 設置 Y 軸範圍，確保資料放大和縮小時依然能呈現應有的溫度區間
         if high_temps and low_temps:  # 確保數據不為空
             min_temp = min(min(low_temps), min(high_temps))
             max_temp = max(max(low_temps), max(high_temps))
-            self.plot_widget.setYRange(min_temp - 5, max_temp + 5)  # 增加一些緩衝區
+            self.plot_widget.setYRange(min_temp - 3, max_temp + 3)  # 增加一些緩衝區
 
+        # 把資料打在畫布上
         self.plot_widget.plot(timestamps, high_temps, pen='r', label='最高氣溫')
         self.plot_widget.plot(timestamps, low_temps, pen='y', label='最低氣溫')
+
         self.plot_widget.setTitle(f"氣溫從 {start_date} 到 {end_date}")
         self.plot_widget.getAxis('left').setLabel('溫度 (°C)')
-
-        # 格式化 X 軸的日期時間標籤
-        ticks = []
-        for ts in timestamps:
-            dt = datetime.fromtimestamp(ts)  # 將時間戳轉換為 datetime 物件
-            ticks.append((ts, dt.strftime('%Y-%m-%d %H:%M')))  # 格式化字符串
-
-        self.plot_widget.getAxis('bottom').setTicks([ticks])  # 設置刻度標籤
         self.plot_widget.getAxis('bottom').setLabel('日期時間')
-        self.plot_widget.addLegend()
 
+        # 隨資料時間區間動態調整刻度的顯示
+        self._x_axis_show_decision(timestamps, unit)
+        self.plot_widget.addLegend()
 
     def fetch_temperature_data(self, start_date, end_date, unit):
 
@@ -114,8 +107,10 @@ class TemperaturePlotter(QMainWindow):
         )
         cursor = connection.cursor()
 
+        # 基於溫度變化的資料可觀察性去優化搜尋條件，善用SQL語法中的GROUP BY和AVG，減少資料量傳輸
+        # 我們應隨著資料的時間間隔變長，去改變資料搜尋的方法，對1年來說，1分鐘的資料之間比較意義不大
+        # 想觀察的應該是每月的溫度變化，因此我們可進行優化，取月平均溫度即可，點的減少即減少繪圖負擔
         query = self._query_decision(unit)
-        #query = "SELECT timestamp, temp_high, temp_low FROM temperature_records WHERE timestamp BETWEEN %s AND %s"
         cursor.execute(query, (start_date, end_date))
         results = cursor.fetchall()
 
@@ -132,7 +127,35 @@ class TemperaturePlotter(QMainWindow):
         connection.close()
         return timestamps, high_temps, low_temps
 
+    # 決定X軸顯示的刻度形式
+    def _x_axis_show_decision(self, timestamps, unit):
+        temp_format = '%Y-%m-%d %H:%M'
+
+        if unit =='日':
+            temp_format = '%Y-%m-%d'
+        elif unit =='月':
+            temp_format = '%Y-%m'
+        elif unit =='年':
+            temp_format = '%Y'
+
+        ticks = []
+        for ts in timestamps:
+            dt = datetime.fromtimestamp(ts)  # 將時間戳轉換為 datetime 物件
+            ticks.append((ts, dt.strftime(temp_format)))  # 格式化字符串
+        self.plot_widget.getAxis('bottom').setTicks([ticks])  # 設置刻度標籤
+
+    # 決定QUERY的SYNTAX
     def _query_decision(self, unit):
+        if unit == "分鐘":
+            query = """
+                SELECT DATE_FORMAT(timestamp, '%Y-%m-%d %H:%i:00') AS minute, 
+                       temp_high, 
+                       temp_low 
+                FROM temperature_records 
+                WHERE timestamp BETWEEN %s AND %s 
+                ORDER BY timestamp;
+            """
+
         if unit == "小時":
             query = """
                 SELECT DATE_FORMAT(timestamp, '%Y-%m-%d %H:00:00') AS hour, 
